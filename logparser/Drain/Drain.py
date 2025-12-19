@@ -211,25 +211,32 @@ class LogParser:
 
         return retVal
 
-    def outputResult(self, logClustL):
-        log_templates = [0] * self.df_log.shape[0]
-        log_templateids = [0] * self.df_log.shape[0]
-        df_events = []
-        for logClust in logClustL:
-            template_str = " ".join(logClust.logTemplate)
-            occurrence = len(logClust.logIDL)
-            template_id = hashlib.md5(template_str.encode("utf-8")).hexdigest()[0:8]
-            for logID in logClust.logIDL:
-                logID -= 1
-                log_templates[logID] = template_str
-                log_templateids[logID] = template_id
-            df_events.append([template_id, template_str, occurrence])
+    def outputResult(self, logClustL, log_templates=None, log_templateids=None):
+        # step 1: 兜底初始化，兼容原始逻辑
+        if log_templates is None or log_templateids is None:
+            max_index = self.df_log["LineId"].max()
+            log_templates = [0] * max_index
+            log_templateids = [0] * max_index
+            df_events = []
+            for logClust in logClustL:
+                template_str = " ".join(logClust.logTemplate)
+                occurrence = len(logClust.logIDL)
+                template_id = hashlib.md5(template_str.encode("utf-8")).hexdigest()[0:8]
+                for logID in logClust.logIDL:
+                    log_templates[logID - 1] = template_str
+                    log_templateids[logID - 1] = template_id
+                df_events.append([template_id, template_str, occurrence])
+        else:
+            # step 2: 在冻结模式下直接使用传入的匹配结果
+            df_events = []
 
-        df_event = pd.DataFrame(
-            df_events, columns=["EventId", "EventTemplate", "Occurrences"]
+        # step 3: 写入结构化日志
+        self.df_log["EventId"] = self.df_log["LineId"].map(
+            lambda idx: log_templateids[idx - 1]
         )
-        self.df_log["EventId"] = log_templateids
-        self.df_log["EventTemplate"] = log_templates
+        self.df_log["EventTemplate"] = self.df_log["LineId"].map(
+            lambda idx: log_templates[idx - 1]
+        )
         if self.keep_para:
             self.df_log["ParameterList"] = self.df_log.apply(
                 self.get_parameter_list, axis=1
@@ -270,14 +277,28 @@ class LogParser:
         for child in node.childD:
             self.printTree(node.childD[child], dep + 1)
 
-    def parse(self, logName):
+    def parse(self, logName, rootNode=None, logCluL=None, update=True, df_log=None, total_size=None):
         print("Parsing file: " + os.path.join(self.path, logName))
         start_time = datetime.now()
         self.logName = logName
-        rootNode = Node()
-        logCluL = []
+        # step 1: 复用或初始化树与聚类列表
+        rootNode = rootNode if rootNode is not None else Node()
+        logCluL = logCluL if logCluL is not None else []
 
-        self.load_data()
+        # step 2: 装载数据，支持外部切片
+        if df_log is None:
+            self.load_data()
+        else:
+            self.df_log = df_log
+
+        # step 3: 预分配结果数组，按 LineId 最大值兜底
+        max_line_id = self.df_log["LineId"].max()
+        if pd.isna(max_line_id):
+            max_line_id = 0
+        total_lines = total_size if total_size is not None else len(self.df_log)
+        allocate_len = max(max_line_id, total_lines)
+        log_templates = ["" for _ in range(allocate_len)]
+        log_templateids = ["" for _ in range(allocate_len)]
 
         count = 0
         for idx, line in self.df_log.iterrows():
@@ -285,18 +306,29 @@ class LogParser:
             logmessageL = self.preprocess(line["Content"]).strip().split()
             matchCluster = self.treeSearch(rootNode, logmessageL)
 
-            # Match no existing log cluster
+            # step 4: 未匹配模板
             if matchCluster is None:
-                newCluster = Logcluster(logTemplate=logmessageL, logIDL=[logID])
-                logCluL.append(newCluster)
-                self.addSeqToPrefixTree(rootNode, newCluster)
-
-            # Add the new log message to the existing cluster
+                if update:
+                    newCluster = Logcluster(logTemplate=logmessageL, logIDL=[logID])
+                    logCluL.append(newCluster)
+                    self.addSeqToPrefixTree(rootNode, newCluster)
+                    template_str = " ".join(newCluster.logTemplate)
+                    template_id = hashlib.md5(template_str.encode("utf-8")).hexdigest()[0:8]
+                else:
+                    template_str = "<UNMATCHED>"
+                    template_id = "NoMatch"
             else:
-                newTemplate = self.getTemplate(logmessageL, matchCluster.logTemplate)
-                matchCluster.logIDL.append(logID)
-                if " ".join(newTemplate) != " ".join(matchCluster.logTemplate):
-                    matchCluster.logTemplate = newTemplate
+                if update:
+                    newTemplate = self.getTemplate(logmessageL, matchCluster.logTemplate)
+                    matchCluster.logIDL.append(logID)
+                    if " ".join(newTemplate) != " ".join(matchCluster.logTemplate):
+                        matchCluster.logTemplate = newTemplate
+                template_str = " ".join(matchCluster.logTemplate)
+                template_id = hashlib.md5(template_str.encode("utf-8")).hexdigest()[0:8]
+
+            # step 5: 保存匹配结果（冻结模式下不改内部结构）
+            log_templates[logID - 1] = template_str
+            log_templateids[logID - 1] = template_id
 
             count += 1
             if count % 1000 == 0 or count == len(self.df_log):
@@ -309,9 +341,10 @@ class LogParser:
         if not os.path.exists(self.savePath):
             os.makedirs(self.savePath)
 
-        self.outputResult(logCluL)
+        self.outputResult(logCluL, log_templates, log_templateids)
 
         print("Parsing done. [Time taken: {!s}]".format(datetime.now() - start_time))
+        return rootNode, logCluL, log_templates, log_templateids
 
     def load_data(self):
         headers, regex = self.generate_logformat_regex(self.log_format)
