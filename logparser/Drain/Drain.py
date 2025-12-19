@@ -211,33 +211,51 @@ class LogParser:
 
         return retVal
 
-    def outputResult(self, logClustL):
-        log_templates = [0] * self.df_log.shape[0]
-        log_templateids = [0] * self.df_log.shape[0]
-        df_events = []
-        for logClust in logClustL:
-            template_str = " ".join(logClust.logTemplate)
-            occurrence = len(logClust.logIDL)
-            template_id = hashlib.md5(template_str.encode("utf-8")).hexdigest()[0:8]
-            for logID in logClust.logIDL:
-                logID -= 1
-                log_templates[logID] = template_str
-                log_templateids[logID] = template_id
-            df_events.append([template_id, template_str, occurrence])
+    def outputResult(
+        self, logClustL, log_templates=None, log_templateids=None, result_name=None
+    ):
+        # Step 1: choose output names
+        if result_name is None:
+            result_name = self.logName
 
-        df_event = pd.DataFrame(
-            df_events, columns=["EventId", "EventTemplate", "Occurrences"]
-        )
+        # Step 2: fill templates either from assignments or clusters
+        if log_templates is None or log_templateids is None:
+            log_templates = [0] * self.df_log.shape[0]
+            log_templateids = [0] * self.df_log.shape[0]
+            df_events = []
+            for logClust in logClustL:
+                template_str = " ".join(logClust.logTemplate)
+                occurrence = len(logClust.logIDL)
+                template_id = hashlib.md5(template_str.encode("utf-8")).hexdigest()[
+                    0:8
+                ]
+                for logID in logClust.logIDL:
+                    logID -= 1
+                    log_templates[logID] = template_str
+                    log_templateids[logID] = template_id
+                df_events.append([template_id, template_str, occurrence])
+        else:
+            df_events = []
+            if logClustL:
+                for logClust in logClustL:
+                    template_str = " ".join(logClust.logTemplate)
+                    occurrence = len(logClust.logIDL)
+                    template_id = hashlib.md5(
+                        template_str.encode("utf-8")
+                    ).hexdigest()[0:8]
+                    df_events.append([template_id, template_str, occurrence])
+
+        # Step 3: write structured logs
         self.df_log["EventId"] = log_templateids
         self.df_log["EventTemplate"] = log_templates
         if self.keep_para:
             self.df_log["ParameterList"] = self.df_log.apply(
                 self.get_parameter_list, axis=1
             )
-        self.df_log.to_csv(
-            os.path.join(self.savePath, self.logName + "_structured.csv"), index=False
-        )
+        structured_path = os.path.join(self.savePath, result_name + "_structured.csv")
+        self.df_log.to_csv(structured_path, index=False)
 
+        # Step 4: write templates summary
         occ_dict = dict(self.df_log["EventTemplate"].value_counts())
         df_event = pd.DataFrame()
         df_event["EventTemplate"] = self.df_log["EventTemplate"].unique()
@@ -246,10 +264,11 @@ class LogParser:
         )
         df_event["Occurrences"] = df_event["EventTemplate"].map(occ_dict)
         df_event.to_csv(
-            os.path.join(self.savePath, self.logName + "_templates.csv"),
+            os.path.join(self.savePath, result_name + "_templates.csv"),
             index=False,
             columns=["EventId", "EventTemplate", "Occurrences"],
         )
+        return structured_path
 
     def printTree(self, node, dep):
         pStr = ""
@@ -270,33 +289,71 @@ class LogParser:
         for child in node.childD:
             self.printTree(node.childD[child], dep + 1)
 
-    def parse(self, logName):
+    def parse(
+        self,
+        logName,
+        update=True,
+        rootNode=None,
+        logCluL=None,
+        max_lines=None,
+        start_from=0,
+        result_name=None,
+    ):
+        # Step 1: prepare context
         print("Parsing file: " + os.path.join(self.path, logName))
         start_time = datetime.now()
         self.logName = logName
-        rootNode = Node()
-        logCluL = []
+        if rootNode is None:
+            rootNode = Node()
+        if logCluL is None:
+            logCluL = []
+        self.rootNode = rootNode
+        self.logCluL = logCluL
 
+        # Step 2: load and optionally slice data
         self.load_data()
+        if max_lines is not None:
+            self.df_log = self.df_log.iloc[:max_lines].copy()
+        if start_from > 0:
+            self.df_log = self.df_log.iloc[start_from:].copy()
+        if result_name is None:
+            result_name = logName
 
+        # Step 3: allocate result holders
+        log_templates = ["<UNMATCHED>"] * self.df_log.shape[0]
+        log_templateids = ["NoMatch"] * self.df_log.shape[0]
+
+        # Step 4: iterate over lines and optionally update tree
         count = 0
-        for idx, line in self.df_log.iterrows():
+        for pos, (_, line) in enumerate(self.df_log.iterrows()):
             logID = line["LineId"]
             logmessageL = self.preprocess(line["Content"]).strip().split()
             matchCluster = self.treeSearch(rootNode, logmessageL)
 
             # Match no existing log cluster
-            if matchCluster is None:
+            if matchCluster is None and update:
                 newCluster = Logcluster(logTemplate=logmessageL, logIDL=[logID])
                 logCluL.append(newCluster)
                 self.addSeqToPrefixTree(rootNode, newCluster)
+                matchCluster = newCluster
 
             # Add the new log message to the existing cluster
+            if matchCluster is not None:
+                template_tokens = matchCluster.logTemplate
+                if update:
+                    newTemplate = self.getTemplate(logmessageL, matchCluster.logTemplate)
+                    matchCluster.logIDL.append(logID)
+                    if " ".join(newTemplate) != " ".join(matchCluster.logTemplate):
+                        matchCluster.logTemplate = newTemplate
+                        template_tokens = matchCluster.logTemplate
+                template_str = " ".join(template_tokens)
+                template_id = hashlib.md5(template_str.encode("utf-8")).hexdigest()[0:8]
+                log_templates[pos] = template_str
+                log_templateids[pos] = template_id
             else:
-                newTemplate = self.getTemplate(logmessageL, matchCluster.logTemplate)
-                matchCluster.logIDL.append(logID)
-                if " ".join(newTemplate) != " ".join(matchCluster.logTemplate):
-                    matchCluster.logTemplate = newTemplate
+                # Frozen mode with no match
+                log_templates[pos] = "<UNMATCHED>"
+                log_templateids[pos] = "NoMatch"
 
             count += 1
             if count % 1000 == 0 or count == len(self.df_log):
@@ -306,12 +363,25 @@ class LogParser:
                     )
                 )
 
+        # Step 5: output structured result
         if not os.path.exists(self.savePath):
             os.makedirs(self.savePath)
 
-        self.outputResult(logCluL)
+        result_path = self.outputResult(
+            logCluL,
+            log_templates=log_templates,
+            log_templateids=log_templateids,
+            result_name=result_name,
+        )
 
         print("Parsing done. [Time taken: {!s}]".format(datetime.now() - start_time))
+        return {
+            "result_path": result_path,
+            "rootNode": rootNode,
+            "log_clusters": logCluL,
+            "templates": log_templates,
+            "template_ids": log_templateids,
+        }
 
     def load_data(self):
         headers, regex = self.generate_logformat_regex(self.log_format)
