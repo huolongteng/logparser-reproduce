@@ -290,14 +290,15 @@ class LogParser:
         if df_subset is None:
             self.load_data()
         else:
-            self.df_log = df_subset.copy()
+            # 子集模式下重置索引，保证顺序下标连续
+            self.df_log = df_subset.copy().reset_index(drop=True)
 
         # 初始化输出占位
         log_templates = ["" for _ in range(self.df_log.shape[0])]
         log_templateids = ["" for _ in range(self.df_log.shape[0])]
 
         count = 0
-        for idx, line in self.df_log.iterrows():
+        for pos, (idx, line) in enumerate(self.df_log.iterrows()):
             logID = line["LineId"]
             logmessageL = self.preprocess(line["Content"]).strip().split()
             matchCluster = self.treeSearch(self.rootNode, logmessageL)
@@ -305,13 +306,13 @@ class LogParser:
             # 冻结模式下，仅做匹配，不修改任何模板
             if not update:
                 if matchCluster is None:
-                    log_templates[idx] = "<UNMATCHED>"
-                    log_templateids[idx] = "NoMatch"
+                    log_templates[pos] = "<UNMATCHED>"
+                    log_templateids[pos] = "NoMatch"
                 else:
                     template_str = " ".join(matchCluster.logTemplate)
                     template_id = hashlib.md5(template_str.encode("utf-8")).hexdigest()[0:8]
-                    log_templates[idx] = template_str
-                    log_templateids[idx] = template_id
+                    log_templates[pos] = template_str
+                    log_templateids[pos] = template_id
                 count += 1
                 if count % 1000 == 0 or count == len(self.df_log):
                     print(

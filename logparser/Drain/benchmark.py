@@ -225,8 +225,10 @@ def main():
         # 阶段A：学习模板
         parser.parse(log_file, df_subset=df_train, update=True, save_result=False)
         train_df_pred = parser.df_log.copy()
+        # 同时记录聚类总数与模板集合规模，便于冻结校验
         train_templates = set(" ".join(c.logTemplate) for c in parser.logCluL)
         template_count_before = len(train_templates)
+        cluster_count_before = len(parser.logCluL)
 
         # 阶段A评估及模板集合对比
         train_pred_path = os.path.join(output_dir, log_file + "_structured_train.csv")
@@ -242,8 +244,8 @@ def main():
         template_intersection = len(train_templates.intersection(train_gt_templates))
 
         print(
-            f"Stage A templates learned: {template_count_before}, GT templates: {len(train_gt_templates)}, "
-            f"Intersection: {template_intersection}"
+            f"Stage A templates learned: {template_count_before} (clusters: {cluster_count_before}), "
+            f"GT templates: {len(train_gt_templates)}, Intersection: {template_intersection}"
         )
 
         # 阶段B：冻结匹配
@@ -256,9 +258,9 @@ def main():
             save_result=False,
         )
         test_df_pred = parser.df_log.copy()
-        template_count_after = len(parser.logCluL)
+        cluster_count_after = len(parser.logCluL)
         assert (
-            template_count_before == template_count_after
+            cluster_count_before == cluster_count_after
         ), "Template count changed during freeze matching"
 
         # 合并预测并进行全量评估
@@ -273,7 +275,7 @@ def main():
         )
 
         print(
-            f"Stage B matched with frozen templates. Templates before/after: {template_count_before}/{template_count_after}"
+            f"Stage B matched with frozen templates. Templates before/after: {cluster_count_before}/{cluster_count_after}"
         )
         print(
             f"Train ratio: {train_ratio}, Freeze: {freeze_templates}, Train metrics: F1={train_f1:.4f}, Acc={train_acc:.4f}"
@@ -287,8 +289,8 @@ def main():
                 "Accuracy": accuracy,
                 "Train_F1": train_f1,
                 "Train_Accuracy": train_acc,
-                "Train_Templates": template_count_before,
-                "Frozen_Templates": template_count_after,
+                "Train_Templates": cluster_count_before,
+                "Frozen_Templates": cluster_count_after,
                 "Template_Intersection": template_intersection,
             }
         )
