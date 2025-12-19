@@ -46,6 +46,11 @@ Running the benchmark script on Loghub_2k datasets, you could obtain the followi
 |  OpenStack  | 0.992536   | 0.7325   |
 |     Mac     | 0.975451   | 0.7865   |
 
+指标解释（基于 `logparser/utils/evaluator.py` 的评估口径）：
+
+1. F1_measure：先统计同一 EventId 下日志行的两两组合数量，计算聚类精度与召回后取 F1，衡量事件模板聚类质量。
+2. Accuracy：按逐行 EventId 完全一致的比例计算解析准确率，衡量单条日志被分配到正确模板的程度。
+
 ### Industrial Adoption 
 
 Researchers from IBM ([@davidohana](https://github.com/davidohana)) made an upgrade version of Drain with additional features for production use: [https://github.com/logpai/Drain3](https://github.com/logpai/Drain3).

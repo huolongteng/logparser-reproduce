@@ -39,6 +39,8 @@ def evaluate(groundtruth, parsedresult):
     non_empty_log_ids = df_groundtruth[~df_groundtruth["EventId"].isnull()].index
     df_groundtruth = df_groundtruth.loc[non_empty_log_ids]
     df_parsedlog = df_parsedlog.loc[non_empty_log_ids]
+    # 步骤 1：以配对组合计数方式计算聚类精度、召回和 F1（关注事件模板聚类质量）
+    # 步骤 2：基于每条日志的 EventId 是否匹配计算 Parsing_Accuracy（关注逐行解析正确率）
     (precision, recall, f_measure, accuracy) = get_accuracy(
         df_groundtruth["EventId"], df_parsedlog["EventId"]
     )
